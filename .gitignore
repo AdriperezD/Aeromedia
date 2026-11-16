@@ -20,3 +20,6 @@ captures/
 
 # Release signing: path and password of the private key
 keystore.properties
+
+# Working data of the Spotify import (personal library)
+spotify-import/

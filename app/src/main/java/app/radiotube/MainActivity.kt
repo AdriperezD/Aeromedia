@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -73,6 +74,7 @@ import androidx.media3.session.SessionToken
 import coil.compose.AsyncImage
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.delay
+import org.json.JSONObject
 
 /** What the screen knows about the player, mirrored from the service's MediaSession. */
 class PlayerUi {
@@ -184,6 +186,8 @@ fun addLinks(text: String, name: String? = null, playlistId: String? = null): St
     }
 }
 
+private const val IMPORT_PREFIX = "aeromedia-import:"
+
 class MainActivity : ComponentActivity() {
     private val ui = PlayerUi()
     private var future: ListenableFuture<MediaController>? = null
@@ -214,8 +218,42 @@ class MainActivity : ComponentActivity() {
     private fun handleShare(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
         val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        if (text.startsWith(IMPORT_PREFIX)) {
+            importList(text.removePrefix(IMPORT_PREFIX))
+            return
+        }
         val message = addLinks(text) ?: "Eso no parece un enlace de YouTube"
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Bulk import of a ready-made list, for tools that already know each video (for instance a Spotify library
+     * matched to YouTube on a computer). The payload is base64 JSON:
+     * {"source": key that identifies the list, "name": ..., "tracks": [{"id", "title", "artist", "duration" in s}]}.
+     * Sending the same source again adds whatever is new to the same list.
+     */
+    private fun importList(payload: String) {
+        val message = try {
+            val json = JSONObject(String(Base64.decode(payload.trim(), Base64.DEFAULT)))
+            val array = json.getJSONArray("tracks")
+            val tracks = (0 until array.length()).map { array.getJSONObject(it) }
+                .filter { it.optString("id").length == 11 }
+                .map {
+                    val title = it.optString("title")
+                    Track(
+                        id = it.getString("id"), title = title.ifEmpty { "YouTube · ${it.getString("id")}" }.take(160),
+                        artist = it.optString("artist"), durationMs = (it.optDouble("duration", 0.0) * 1000).toLong(),
+                        custom = title.isNotEmpty(),
+                    )
+                }
+            if (tracks.isEmpty()) "La lista no trae ninguna pista" else {
+                val total = Library.importPlaylist(json.getString("source"), json.optString("name"), tracks)
+                "Lista importada: $total pistas"
+            }
+        } catch (e: Exception) {
+            "No se pudo leer la lista"
+        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
     override fun onStart() {
