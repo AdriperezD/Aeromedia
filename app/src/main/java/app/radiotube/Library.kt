@@ -34,10 +34,16 @@ data class Track(
     val hls: Boolean = false,
     /** The user typed this title, so yt-dlp metadata must not overwrite it. */
     val custom: Boolean = false,
+    /** Name of the downloaded audio file in [Library.audioDir], when the track is saved for offline use. */
+    val file: String? = null,
 ) {
     val url get() = "https://www.youtube.com/watch?v=$id"
     val thumb get() = "https://i.ytimg.com/vi/$id/mqdefault.jpg"
     val thumbLarge get() = "https://i.ytimg.com/vi/$id/hq720.jpg"
+
+    /** Where playback should start: long mixes pick up where they were left, like the desktop plugin does. */
+    val resumeMs: Long
+        get() = if (!live && positionMs > 10_000 && (durationMs == 0L || positionMs < durationMs - 15_000)) positionMs else 0
 }
 
 /** A named list of saved tracks. [source] is the YouTube playlist it was imported from, if any. */
@@ -55,18 +61,22 @@ object Items {
     const val SCHEME = "radiotube"
 
     /** The URI is a placeholder; [Yt.resolve] swaps in the real stream when ExoPlayer opens it. */
-    fun build(t: Track): MediaItem = MediaItem.Builder()
-        .setMediaId(t.id)
-        .setUri(Uri.parse("$SCHEME://v/${t.id}" + if (t.hls) "?hls=1" else ""))
-        .apply { if (t.hls) setMimeType(MimeTypes.APPLICATION_M3U8) }
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(t.title)
-                .setArtist(t.artist.ifEmpty { "YouTube" })
-                .setArtworkUri(Uri.parse(t.thumb))
-                .build()
-        )
-        .build()
+    fun build(t: Track): MediaItem {
+        // A downloaded track plays from its file, which is never an HLS manifest.
+        val hls = t.hls && t.file == null
+        return MediaItem.Builder()
+            .setMediaId(t.id)
+            .setUri(Uri.parse("$SCHEME://v/${t.id}" + if (hls) "?hls=1" else ""))
+            .apply { if (hls) setMimeType(MimeTypes.APPLICATION_M3U8) }
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(t.title)
+                    .setArtist(t.artist.ifEmpty { "YouTube" })
+                    .setArtworkUri(Uri.parse(t.thumb))
+                    .build()
+            )
+            .build()
+    }
 }
 
 object Library {
@@ -75,6 +85,10 @@ object Library {
     private val lists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = lists
     private var file: File? = null
+
+    /** Where downloaded audio lives (app-private storage). */
+    lateinit var audioDir: File
+        private set
     private var prefs: SharedPreferences? = null
     private val io = Executors.newSingleThreadExecutor()
 
@@ -94,6 +108,7 @@ object Library {
         if (file != null) return
         val f = File(context.filesDir, "library.json")
         file = f
+        audioDir = File(context.filesDir, "audio")
         prefs = context.getSharedPreferences("library", Context.MODE_PRIVATE)
         try {
             val text = f.readText().trim()
@@ -111,6 +126,7 @@ object Library {
                     live = o.optBoolean("live"),
                     hls = o.optBoolean("hls"),
                     custom = o.optBoolean("custom"),
+                    file = o.optString("file").ifEmpty { null },
                 )
             }
             val saved = root.optJSONArray("playlists") ?: JSONArray()
@@ -174,6 +190,18 @@ object Library {
     }
 
     fun setPosition(id: String, positionMs: Long) = edit(id) { it.copy(positionMs = positionMs.coerceAtLeast(0)) }
+
+    /** The track's downloaded audio, or null when it has none (or the file has gone missing). */
+    fun audioFile(track: Track): File? = track.file?.let { File(audioDir, it) }?.takeIf { it.isFile }
+
+    fun setFile(id: String, name: String?) = edit(id) { it.copy(file = name) }
+
+    /** Frees the space; the track stays in the library and streams again. */
+    fun removeDownload(id: String) {
+        val name = get(id)?.file ?: return
+        setFile(id, null)
+        File(audioDir, name).delete()
+    }
 
     fun setHls(id: String, hls: Boolean) = edit(id) { it.copy(hls = hls) }
 
@@ -244,10 +272,18 @@ object Library {
 
     @Synchronized
     private fun mutate(change: (List<Track>) -> List<Track>) {
-        val next = change(state.value)
-        if (next == state.value) return
+        val before = state.value
+        val next = change(before)
+        if (next == before) return
         state.value = next
         save()
+        // Tracks that left the library take their downloaded audio with them.
+        if (next.size < before.size) {
+            val kept = next.mapTo(HashSet()) { it.id }
+            val gone = before.filter { it.id !in kept }
+            Downloads.cancel(gone.map { it.id })
+            for (t in gone) t.file?.let { File(audioDir, it).delete() }
+        }
     }
 
     @Synchronized
@@ -269,7 +305,7 @@ object Library {
                     JSONObject()
                         .put("id", t.id).put("title", t.title).put("artist", t.artist)
                         .put("duration", t.durationMs).put("position", t.positionMs)
-                        .put("live", t.live).put("hls", t.hls).put("custom", t.custom)
+                        .put("live", t.live).put("hls", t.hls).put("custom", t.custom).put("file", t.file ?: "")
                 )
             }
             val listArray = JSONArray()

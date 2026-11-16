@@ -29,6 +29,12 @@ object Yt {
 
     private const val TAG = "RadioTube"
     private const val PLAYLIST_LIMIT = 300
+
+    // Downloads need a plain file; a six-hour ambience mix is a few hundred MB, hence the generous timeout.
+    private const val DOWNLOAD_FORMAT =
+        "bestaudio[protocol^=http][protocol!*=dash]/best[protocol^=http][protocol!*=dash][height<=480]"
+    private const val DOWNLOAD_TIMEOUT_S = 3 * 60 * 60L
+    private val DOWNLOAD_PROGRESS = Regex("""^\[download]\s+([\d.]+)%""")
     private const val UPDATE_EVERY_MS = 12 * 60 * 60 * 1000L
 
     // Audio-only over plain HTTP when it exists, otherwise HLS (live streams), never fragmented DASH.
@@ -110,6 +116,34 @@ object Yt {
                 Log.w(TAG, "prefetch $id: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Blocking. Saves a track's audio into [dir] as "<id>.<ext>", exactly as YouTube serves it (no ffmpeg on the
+     * phone, and ExoPlayer plays the webm/m4a directly). Reports percent done through [onProgress].
+     */
+    @Throws(IOException::class)
+    fun download(id: String, dir: File, onProgress: (Int) -> Unit, onProcess: (Process) -> Unit, cancelled: () -> Boolean): File {
+        if (!ready.await(3, TimeUnit.MINUTES)) throw IOException("El motor todavía se está preparando.")
+        initError?.let { throw IOException(it) }
+        dir.mkdirs()
+        val args = listOf(
+            "--no-playlist", "--no-warnings", "--newline", "--socket-timeout", "15", "--retries", "3",
+            "-f", DOWNLOAD_FORMAT, "-o", File(dir, "$id.%(ext)s").path, "https://www.youtube.com/watch?v=$id",
+        )
+        val onLine = { line: String ->
+            DOWNLOAD_PROGRESS.find(line)?.let { onProgress(it.groupValues[1].toFloat().toInt().coerceIn(0, 100)) }
+            Unit
+        }
+        try {
+            run(FAST_CLIENT + args, DOWNLOAD_TIMEOUT_S, onLine, onProcess)
+        } catch (e: IOException) {
+            if (cancelled() || isFinal(e)) throw e
+            Log.w(TAG, "fast client failed to download $id (${e.message}); trying yt-dlp's defaults")
+            run(args, DOWNLOAD_TIMEOUT_S, onLine, onProcess)
+        }
+        return dir.listFiles { f -> f.name.startsWith("$id.") && !f.name.endsWith(".part") && !f.name.endsWith(".ytdl") }
+            ?.firstOrNull() ?: throw IOException("yt-dlp no guardó ningún archivo.")
     }
 
     /**
@@ -222,8 +256,14 @@ object Yt {
     /**
      * Runs yt-dlp and returns its stdout. The library's own runner starts Python on the zipped yt-dlp, which
      * recompiles every module on each launch; running the unpacked copy lets Python keep its bytecode cache.
+     * With [onLine], stdout is delivered line by line instead of being returned.
      */
-    private fun run(args: List<String>): String = binary.read {
+    private fun run(
+        args: List<String>,
+        timeoutSeconds: Long = 150,
+        onLine: ((String) -> Unit)? = null,
+        onProcess: ((Process) -> Unit)? = null,
+    ): String = binary.read {
         val bin = File(app.applicationInfo.nativeLibraryDir)
         val python = File(app.noBackupFilesDir, "${YoutubeDL.baseName}/packages/python")
         val command = listOf(File(bin, "libpython.so").path, source().path) + listOf(
@@ -240,15 +280,17 @@ object Yt {
                 put("TMPDIR", app.cacheDir.path)
             }
         }.start()
+        onProcess?.invoke(process)
         val err = StringBuilder()
         val errors = thread(name = "yt-stderr") {
             try { process.errorStream.bufferedReader().forEachLine { err.appendLine(it) } } catch (e: IOException) { }
         }
         val watchdog = thread(name = "yt-watchdog") {
-            try { if (!process.waitFor(150, TimeUnit.SECONDS)) process.destroyForcibly() } catch (e: InterruptedException) { }
+            try { if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) process.destroyForcibly() } catch (e: InterruptedException) { }
         }
         try {
-            val out = process.inputStream.bufferedReader().readText()
+            val reader = process.inputStream.bufferedReader()
+            val out = if (onLine == null) reader.readText() else { reader.forEachLine(onLine); "" }
             val code = process.waitFor()
             errors.join(2000)
             if (code != 0) throw IOException(friendly(err.toString()))

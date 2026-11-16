@@ -112,12 +112,7 @@ class PlayerUi {
             if (c.playWhenReady) c.pause() else c.play()
             return
         }
-        // Long mixes pick up where they were left, like the desktop plugin does.
-        val resume = when {
-            track.live -> C.TIME_UNSET
-            track.positionMs > 10_000 && (track.durationMs == 0L || track.positionMs < track.durationMs - 15_000) -> track.positionMs
-            else -> 0L
-        }
+        val resume = if (track.live) C.TIME_UNSET else track.resumeMs
         var list = context
         var queue = Library.queue(list)
         if (queue == null || queue.none { it.id == track.id }) {
@@ -261,6 +256,8 @@ fun RadioTubeScreen(ui: PlayerUi) {
     val status by Yt.status.collectAsState()
     val error by Bus.error.collectAsState()
     val notice by Bus.notice.collectAsState()
+    val downloads by Downloads.progress.collectAsState()
+    var downloading by remember { mutableStateOf(false) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var adding by remember { mutableStateOf(false) }
     var editingId by remember { mutableStateOf<String?>(null) }
@@ -287,7 +284,7 @@ fun RadioTubeScreen(ui: PlayerUi) {
         AeroBackground()
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
             Column(Modifier.padding(horizontal = 16.dp)) {
-                Header(status)
+                Header(status ?: if (downloads.isEmpty()) null else "Descargando · quedan ${downloads.size}")
                 NowPlaying(ui, tracks.firstOrNull { it.id == ui.currentId }, error, hasTracks = tracks.isNotEmpty())
                 Row(Modifier.padding(top = 16.dp, bottom = 8.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -295,6 +292,8 @@ fun RadioTubeScreen(ui: PlayerUi) {
                         style = TextStyle(shadow = Aero.TitleShadow), modifier = Modifier.weight(1f),
                     )
                     if (shown.isNotEmpty()) {
+                        Orb(34.dp, OrbGlass, onClick = { downloading = true }) { GlyphIcon(Glyph.Download, 15.dp, Aero.Navy) }
+                        Spacer(Modifier.width(10.dp))
                         Text("${shown.size}", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp, style = TextStyle(shadow = Aero.TitleShadow))
                     }
                 }
@@ -333,6 +332,7 @@ fun RadioTubeScreen(ui: PlayerUi) {
                                 track = track,
                                 current = track.id == ui.currentId,
                                 playing = track.id == ui.currentId && ui.playing && !ui.buffering,
+                                download = downloads[track.id],
                                 onClick = { ui.play(track, selected?.id) },
                                 onLongClick = { editingId = track.id },
                             )
@@ -348,7 +348,8 @@ fun RadioTubeScreen(ui: PlayerUi) {
     }
 
     if (adding) AddDialog(selected, onDismiss = { adding = false })
-    tracks.firstOrNull { it.id == editingId }?.let { track -> EditDialog(track, playlists, onDismiss = { editingId = null }) }
+    tracks.firstOrNull { it.id == editingId }?.let { track -> EditDialog(track, playlists, downloads[track.id], onDismiss = { editingId = null }) }
+    if (downloading) DownloadDialog(selected?.name ?: "Todas", shown, downloads, onDismiss = { downloading = false })
     if (creatingList) PlaylistDialog(null, onDismiss = { creatingList = false }, onCreated = { selectedId = it })
     playlists.firstOrNull { it.id == editingListId }?.let { list -> PlaylistDialog(list, onDismiss = { editingListId = null }) }
 }
@@ -463,7 +464,7 @@ private fun Artwork(track: Track?, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TrackRow(track: Track, current: Boolean, playing: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun TrackRow(track: Track, current: Boolean, playing: Boolean, download: Int?, onClick: () -> Unit, onLongClick: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     Row(
         Modifier
@@ -489,8 +490,19 @@ private fun TrackRow(track: Track, current: Boolean, playing: Boolean, onClick: 
                     resumable && track.durationMs > 0 -> add("${clock(track.positionMs)} / ${clock(track.durationMs)}")
                     track.durationMs > 0 -> add(clock(track.durationMs))
                 }
-            }.joinToString(" · ").ifEmpty { "YouTube" }
+            }.joinToString(" · ").ifEmpty { "YouTube" }.let {
+                when (download) {
+                    null -> it
+                    Downloads.QUEUED -> "En cola para descargar"
+                    else -> "Descargando · $download %"
+                }
+            }
             Text(detail, color = Aero.Sub, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (track.file != null) {
+            Spacer(Modifier.width(8.dp))
+            GlyphIcon(Glyph.Download, 14.dp, Color(0xFF3FA516))
+            if (!current) Spacer(Modifier.width(6.dp))
         }
         if (current) {
             Spacer(Modifier.width(8.dp))
@@ -547,7 +559,7 @@ private fun AddDialog(into: Playlist?, onDismiss: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EditDialog(track: Track, playlists: List<Playlist>, onDismiss: () -> Unit) {
+private fun EditDialog(track: Track, playlists: List<Playlist>, download: Int?, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(track.title) }
     AeroDialog("Editar pista", onDismiss) {
         Spacer(Modifier.height(14.dp))
@@ -563,13 +575,71 @@ private fun EditDialog(track: Track, playlists: List<Playlist>, onDismiss: () ->
                 }
             }
         }
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(16.dp))
+        when {
+            download != null -> AeroPill("Cancelar descarga", OrbGlass, modifier = Modifier.fillMaxWidth(), onClick = {
+                Downloads.cancel(listOf(track.id)); onDismiss()
+            })
+            track.file != null -> AeroPill("Borrar descarga · ${megabytes(listOf(track))}", OrbGlass, modifier = Modifier.fillMaxWidth(), onClick = {
+                Library.removeDownload(track.id); onDismiss()
+            })
+            !track.live -> AeroPill("Descargar para oír sin conexión", OrbGreen, modifier = Modifier.fillMaxWidth(), onClick = {
+                Downloads.start(listOf(track.id)); onDismiss()
+            })
+        }
+        Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             AeroPill("Eliminar", OrbRed, onClick = { Library.remove(track.id); onDismiss() })
             AeroPill("Guardar", OrbBlue, modifier = Modifier.weight(1f), onClick = {
                 if (name.trim() != track.title) Library.rename(track.id, name)
                 onDismiss()
             })
+        }
+    }
+}
+
+private fun megabytes(tracks: List<Track>): String {
+    val bytes = tracks.sumOf { Library.audioFile(it)?.length() ?: 0L }
+    return if (bytes >= 1 shl 30) "%.1f GB".format(bytes / 1073741824.0) else "${(bytes + 524288) / 1048576} MB"
+}
+
+/** Download, or free up, everything in the list on screen. */
+@Composable
+private fun DownloadDialog(listName: String, tracks: List<Track>, downloads: Map<String, Int>, onDismiss: () -> Unit) {
+    val saved = tracks.filter { it.file != null }
+    val busy = tracks.filter { it.id in downloads }
+    val pending = tracks.filter { it.file == null && !it.live && it.id !in downloads }
+    AeroDialog("Descargas · $listName", onDismiss) {
+        Spacer(Modifier.height(10.dp))
+        Text(
+            buildList {
+                add("${saved.size} de ${tracks.size} pistas guardadas en el móvil" + if (saved.isEmpty()) "." else " (${megabytes(saved)}).")
+                if (busy.isNotEmpty()) add("${busy.size} descargándose.")
+                add("Las descargadas suenan sin conexión; los directos no se pueden descargar.")
+            }.joinToString(" "),
+            color = Aero.Sub, fontSize = 14.sp, lineHeight = 19.sp,
+        )
+        Spacer(Modifier.height(16.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (pending.isNotEmpty()) {
+                AeroPill(
+                    if (pending.size == 1) "Descargar 1 pista" else "Descargar ${pending.size} pistas", OrbGreen,
+                    modifier = Modifier.fillMaxWidth(), onClick = { Downloads.start(pending.map { it.id }); onDismiss() },
+                )
+            }
+            if (busy.isNotEmpty()) {
+                AeroPill("Cancelar las descargas en curso", OrbGlass, modifier = Modifier.fillMaxWidth(), onClick = {
+                    Downloads.cancel(busy.map { it.id }); onDismiss()
+                })
+            }
+            if (saved.isNotEmpty()) {
+                AeroPill("Borrar las descargas de esta lista", OrbRed, modifier = Modifier.fillMaxWidth(), onClick = {
+                    saved.forEach { Library.removeDownload(it.id) }; onDismiss()
+                })
+            }
+            if (pending.isEmpty() && busy.isEmpty() && saved.isEmpty()) {
+                AeroPill("Cerrar", OrbGlass, modifier = Modifier.fillMaxWidth(), onClick = onDismiss)
+            }
         }
     }
 }

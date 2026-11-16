@@ -2,6 +2,7 @@ package app.radiotube
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -40,7 +41,15 @@ class PlaybackService : MediaSessionService() {
         val resolving = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, http)) { spec ->
             val uri = spec.uri
             if (uri.scheme != Items.SCHEME) return@Factory spec
-            val stream = Yt.resolve(uri.lastPathSegment.orEmpty(), expectHls = uri.getQueryParameter("hls") == "1")
+            val id = uri.lastPathSegment.orEmpty()
+            val track = Library.get(id)
+            if (track?.file != null) {
+                // Downloaded: play the file, no network and no yt-dlp.
+                val local = Library.audioFile(track)
+                if (local != null) return@Factory spec.buildUpon().setUri(Uri.fromFile(local)).build()
+                Library.setFile(id, null)
+            }
+            val stream = Yt.resolve(id, expectHls = uri.getQueryParameter("hls") == "1")
             spec.buildUpon().setUri(stream.url).setHttpRequestHeaders(stream.headers).build()
         }
         player = ExoPlayer.Builder(this)
@@ -106,7 +115,13 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            mediaItem?.let { Library.lastPlayed = Library.get(it.mediaId) }
+            val track = mediaItem?.let { Library.get(it.mediaId) } ?: return
+            Library.lastPlayed = track
+            // However the player got here (next, end of the previous track, a removal), a track with a saved
+            // place resumes there. Starting at zero would also overwrite that place with the new position.
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT && track.resumeMs > 0 && player.currentPosition < 1000) {
+                player.seekTo(track.resumeMs)
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {

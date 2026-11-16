@@ -277,7 +277,7 @@ fun AeroChip(text: String, selected: Boolean, onClick: () -> Unit, onLongClick: 
     }
 }
 
-enum class Glyph { Play, Pause, Next, Previous, Plus, Repeat, RepeatOne, Shuffle, Close }
+enum class Glyph { Play, Pause, Next, Previous, Plus, Repeat, RepeatOne, Shuffle, Close, Download }
 
 @Composable
 fun GlyphIcon(glyph: Glyph, size: Dp, color: Color = Color.White) {
@@ -306,6 +306,13 @@ fun GlyphIcon(glyph: Glyph, size: Dp, color: Color = Color.White) {
             Glyph.Plus -> {
                 drawLine(color, Offset(s * 0.5f, s * 0.14f), Offset(s * 0.5f, s * 0.86f), s * 0.16f, StrokeCap.Round)
                 drawLine(color, Offset(s * 0.14f, s * 0.5f), Offset(s * 0.86f, s * 0.5f), s * 0.16f, StrokeCap.Round)
+            }
+            Glyph.Download -> {
+                val w = s * 0.13f
+                drawLine(color, Offset(s * 0.5f, s * 0.10f), Offset(s * 0.5f, s * 0.58f), w, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.27f, s * 0.38f), Offset(s * 0.5f, s * 0.62f), w, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.73f, s * 0.38f), Offset(s * 0.5f, s * 0.62f), w, StrokeCap.Round)
+                drawLine(color, Offset(s * 0.16f, s * 0.88f), Offset(s * 0.84f, s * 0.88f), w, StrokeCap.Round)
             }
             Glyph.Close -> {
                 drawLine(color, Offset(s * 0.2f, s * 0.2f), Offset(s * 0.8f, s * 0.8f), s * 0.14f, StrokeCap.Round)
