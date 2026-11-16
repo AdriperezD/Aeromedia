@@ -3,3 +3,17 @@ build/
 local.properties
 *.apk
 .kotlin/
+
+# Local notes for picking the project back up (not published)
+HANDOFF.md
+
+# IDE and OS clutter
+.idea/
+*.iml
+.DS_Store
+
+# Signing keys and release outputs must never be committed
+*.jks
+*.keystore
+app/release/
+captures/
