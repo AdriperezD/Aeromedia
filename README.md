@@ -65,7 +65,11 @@ y reproduce el audio en segundo plano.
 
 ## Instalar
 
-Hace falta un móvil Android 8.0 o superior con la depuración USB activada.
+**Lo más fácil:** descarga el APK de la última versión en
+[Releases](../../releases/latest) y ábrelo en un móvil Android 8.0 o superior
+(64 o 32 bits ARM). Android te pedirá permiso para instalar apps de origen desconocido.
+
+**Compilarla tú:** hace falta el móvil con la depuración USB activada.
 
 ```bash
 ./gradlew :app:assembleRelease
@@ -80,9 +84,10 @@ sdk.dir=/ruta/a/Android/Sdk
 ```
 
 > [!NOTE]
-> El APK ocupa unos 42 MB porque incluye Python y yt-dlp. La versión *release* se
-> firma con la clave de depuración: sirve para instalarla en tu propio móvil, no
-> para publicarla en una tienda.
+> El APK ocupa unos 42 MB porque incluye Python y yt-dlp. Si compilas tú, el APK se
+> firma con tu clave de depuración; los APK publicados en *Releases* van firmados con
+> la clave del proyecto, así que no se pueden instalar uno encima del otro sin
+> desinstalar antes.
 
 La primera vez que se abre, la app actualiza yt-dlp; tarda unos segundos y después
 lo comprueba sola cada 12 horas.
