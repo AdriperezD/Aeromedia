@@ -8,6 +8,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -249,6 +251,28 @@ fun AeroPill(text: String, colors: OrbColors, onClick: () -> Unit, modifier: Mod
         Text(
             text, color = colors.content, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
             style = if (colors === OrbGlass) TextStyle.Default else TextStyle(shadow = Shadow(colors.rim.copy(alpha = 0.7f), Offset(0f, 1f), 3f)),
+        )
+    }
+}
+
+/** A small glossy capsule: a list tab, or a toggle when [selected] changes on tap. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun AeroChip(text: String, selected: Boolean, onClick: () -> Unit, onLongClick: (() -> Unit)? = null, active: OrbColors = OrbBlue) {
+    val colors = if (selected) active else OrbGlass
+    Box(
+        Modifier
+            .height(38.dp)
+            .clip(CircleShape)
+            .drawBehind { orbBody(colors, size.height / 2) }
+            .border(1.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.95f), colors.rim.copy(alpha = 0.45f))), CircleShape)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text, color = colors.content, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+            style = if (selected) TextStyle(shadow = Shadow(colors.rim.copy(alpha = 0.7f), Offset(0f, 1f), 3f)) else TextStyle.Default,
         )
     }
 }

@@ -28,6 +28,7 @@ object Yt {
     val status = MutableStateFlow<String?>(null)
 
     private const val TAG = "RadioTube"
+    private const val PLAYLIST_LIMIT = 300
     private const val UPDATE_EVERY_MS = 12 * 60 * 60 * 1000L
 
     // Audio-only over plain HTTP when it exists, otherwise HLS (live streams), never fragmented DASH.
@@ -107,6 +108,50 @@ object Yt {
                 resolve(id)
             } catch (e: Exception) {
                 Log.w(TAG, "prefetch $id: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Reads a YouTube playlist (titles only, no per-video extraction) and saves it as a list. [name] overrides
+     * the playlist's own title.
+     */
+    fun importPlaylist(listId: String, name: String? = null) {
+        thread(name = "yt-playlist") {
+            status.value = "Importando lista de YouTube…"
+            try {
+                if (!ready.await(3, TimeUnit.MINUTES)) throw IOException("El motor todavía se está preparando.")
+                initError?.let { throw IOException(it) }
+                val out = run(
+                    listOf(
+                        "--flat-playlist", "--dump-single-json", "--playlist-end", PLAYLIST_LIMIT.toString(),
+                        "--no-warnings", "--socket-timeout", "15", "https://www.youtube.com/playlist?list=$listId",
+                    )
+                )
+                val json = JSONObject(out.lineSequence().last { it.startsWith("{") })
+                val entries = json.optJSONArray("entries")
+                val found = ArrayList<Track>()
+                for (i in 0 until (entries?.length() ?: 0)) {
+                    val e = entries!!.optJSONObject(i) ?: continue
+                    val id = e.optString("id")
+                    val title = e.optString("title")
+                    // Deleted and private videos still appear in a playlist, as placeholders.
+                    if (id.length != 11 || title.isEmpty() || title.startsWith("[")) continue
+                    found += Track(
+                        id = id, title = title.take(160),
+                        artist = e.optString("channel").ifEmpty { e.optString("uploader") },
+                        durationMs = (e.optDouble("duration", 0.0) * 1000).toLong(),
+                    )
+                }
+                if (found.isEmpty()) throw IOException("La lista está vacía o es privada.")
+                val title = name?.trim()?.takeIf { it.isNotEmpty() } ?: json.optString("title")
+                val total = Library.importPlaylist(listId, title, found)
+                Bus.notice.value = "Lista importada: $total pistas"
+            } catch (e: Exception) {
+                Log.w(TAG, "playlist $listId: ${e.message}")
+                Bus.notice.value = "No se pudo importar la lista: ${e.message}"
+            } finally {
+                status.value = null
             }
         }
     }

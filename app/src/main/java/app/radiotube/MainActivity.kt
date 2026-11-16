@@ -20,6 +20,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +48,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -99,11 +103,12 @@ class PlayerUi {
         shuffle = c.shuffleModeEnabled
     }
 
-    fun play(track: Track) {
+    /** Plays [track] inside the list it was tapped in ([context]: a playlist id, or null for the whole library). */
+    fun play(track: Track, context: String?) {
         val c = controller ?: return
         Bus.error.value = null
         val state = c.playbackState
-        if (currentId == track.id && (state == Player.STATE_READY || state == Player.STATE_BUFFERING)) {
+        if (currentId == track.id && context == Library.context && (state == Player.STATE_READY || state == Player.STATE_BUFFERING)) {
             if (c.playWhenReady) c.pause() else c.play()
             return
         }
@@ -113,13 +118,16 @@ class PlayerUi {
             track.positionMs > 10_000 && (track.durationMs == 0L || track.positionMs < track.durationMs - 15_000) -> track.positionMs
             else -> 0L
         }
-        val index = (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).mediaId == track.id }
-        if (index == null) {
-            val library = Library.tracks.value
-            c.setMediaItems(library.map(Items::build), library.indexOfFirst { it.id == track.id }.coerceAtLeast(0), resume)
-        } else {
-            c.seekTo(index, resume)
+        var list = context
+        var queue = Library.queue(list)
+        if (queue == null || queue.none { it.id == track.id }) {
+            list = null
+            queue = Library.tracks.value
         }
+        Library.context = list
+        val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        val queued = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId }
+        if (queued == queue.map { it.id }) c.seekTo(index, resume) else c.setMediaItems(queue.map(Items::build), index, resume)
         c.prepare()
         c.play()
     }
@@ -128,7 +136,7 @@ class PlayerUi {
         val c = controller ?: return
         Bus.error.value = null
         when {
-            c.mediaItemCount == 0 -> (Library.lastPlayed ?: Library.tracks.value.firstOrNull())?.let(::play)
+            c.mediaItemCount == 0 -> (Library.lastPlayed ?: Library.tracks.value.firstOrNull())?.let { play(it, Library.context) }
             c.playbackState == Player.STATE_IDLE -> { c.prepare(); c.play() }
             c.playbackState == Player.STATE_ENDED -> { c.seekTo(0); c.play() }
             c.playWhenReady -> c.pause()
@@ -158,16 +166,26 @@ class PlayerUi {
     }
 }
 
-/** Saves every YouTube link found in [text]. Returns null when there was none, else how many were new. */
-fun addLinks(text: String, name: String? = null): Int? {
+/**
+ * Saves every YouTube link found in [text]: videos join the library (and [playlistId], if given), playlist links
+ * are imported as lists. Returns a message for the user, or null when the text held no usable link.
+ */
+fun addLinks(text: String, name: String? = null, playlistId: String? = null): String? {
     val ids = Library.findIds(text)
-    if (ids.isEmpty()) return null
+    val lists = Library.findPlaylistIds(text)
+    if (ids.isEmpty() && lists.isEmpty()) return null
     var added = 0
     for (id in ids) {
         if (Library.add(id, name.takeIf { ids.size == 1 })) added++
+        if (playlistId != null) Library.setMember(playlistId, id, true)
         Yt.prefetch(id)
     }
-    return added
+    for (list in lists) Yt.importPlaylist(list, name.takeIf { ids.isEmpty() && lists.size == 1 })
+    return when {
+        lists.isNotEmpty() -> "Importando lista de YouTube…"
+        added == 0 -> "Ya estaba en tu biblioteca"
+        else -> "Añadido a RadioTube"
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -200,11 +218,7 @@ class MainActivity : ComponentActivity() {
     private fun handleShare(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
         val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
-        val message = when (addLinks(text)) {
-            null -> "Eso no parece un vídeo de YouTube"
-            0 -> "Ya estaba en tu biblioteca"
-            else -> "Añadido a RadioTube"
-        }
+        val message = addLinks(text) ?: "Eso no parece un enlace de YouTube"
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
@@ -241,11 +255,20 @@ private fun clock(ms: Long): String {
 
 @Composable
 fun RadioTubeScreen(ui: PlayerUi) {
+    val context = LocalContext.current
     val tracks by Library.tracks.collectAsState()
+    val playlists by Library.playlists.collectAsState()
     val status by Yt.status.collectAsState()
     val error by Bus.error.collectAsState()
+    val notice by Bus.notice.collectAsState()
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var adding by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<Track?>(null) }
+    var editingId by remember { mutableStateOf<String?>(null) }
+    var creatingList by remember { mutableStateOf(false) }
+    var editingListId by remember { mutableStateOf<String?>(null) }
+
+    val selected = playlists.firstOrNull { it.id == selectedId }
+    val shown = if (selected == null) tracks else selected.trackIds.mapNotNull { id -> tracks.firstOrNull { it.id == id } }
 
     LaunchedEffect(ui.controller) {
         while (true) {
@@ -253,37 +276,67 @@ fun RadioTubeScreen(ui: PlayerUi) {
             delay(500)
         }
     }
+    LaunchedEffect(notice) {
+        notice?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            Bus.notice.value = null
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         AeroBackground()
-        Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
-            Header(status)
-            NowPlaying(ui, tracks.firstOrNull { it.id == ui.currentId }, error, hasTracks = tracks.isNotEmpty())
-            Row(Modifier.padding(top = 18.dp, bottom = 8.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Mi biblioteca", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Light,
-                    style = TextStyle(shadow = Aero.TitleShadow), modifier = Modifier.weight(1f),
-                )
-                if (tracks.isNotEmpty()) {
-                    Text("${tracks.size}", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp, style = TextStyle(shadow = Aero.TitleShadow))
+        Column(Modifier.fillMaxSize().statusBarsPadding()) {
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                Header(status)
+                NowPlaying(ui, tracks.firstOrNull { it.id == ui.currentId }, error, hasTracks = tracks.isNotEmpty())
+                Row(Modifier.padding(top = 16.dp, bottom = 8.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Mi biblioteca", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Light,
+                        style = TextStyle(shadow = Aero.TitleShadow), modifier = Modifier.weight(1f),
+                    )
+                    if (shown.isNotEmpty()) {
+                        Text("${shown.size}", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp, style = TextStyle(shadow = Aero.TitleShadow))
+                    }
                 }
             }
-            if (tracks.isEmpty()) {
-                EmptyLibrary()
-            } else {
-                LazyColumn(
-                    Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 120.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(tracks, key = { it.id }) { track ->
-                        TrackRow(
-                            track = track,
-                            current = track.id == ui.currentId,
-                            playing = track.id == ui.currentId && ui.playing && !ui.buffering,
-                            onClick = { ui.play(track) },
-                            onLongClick = { editing = track },
-                        )
+            // Lists: tap to open one, hold to rename or delete it.
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 10.dp),
+            ) {
+                item(key = "all") { AeroChip("Todas", selected == null, onClick = { selectedId = null }) }
+                items(playlists, key = { it.id }) { list ->
+                    AeroChip(
+                        "${list.name} · ${list.trackIds.size}", selected?.id == list.id,
+                        onClick = { selectedId = list.id }, onLongClick = { editingListId = list.id },
+                    )
+                }
+                item(key = "new") { AeroChip("+ Lista", false, onClick = { creatingList = true }) }
+            }
+            Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
+                when {
+                    tracks.isEmpty() -> EmptyNote(
+                        "Tu biblioteca está vacía",
+                        "Pega un enlace con el botón verde, o en YouTube pulsa Compartir y elige RadioTube.",
+                    )
+                    shown.isEmpty() -> EmptyNote(
+                        "Esta lista está vacía",
+                        "Mantén pulsada una pista en «Todas» para meterla aquí, o pega un enlace con el botón verde.",
+                    )
+                    else -> LazyColumn(
+                        contentPadding = PaddingValues(bottom = 120.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(shown, key = { it.id }) { track ->
+                            TrackRow(
+                                track = track,
+                                current = track.id == ui.currentId,
+                                playing = track.id == ui.currentId && ui.playing && !ui.buffering,
+                                onClick = { ui.play(track, selected?.id) },
+                                onLongClick = { editingId = track.id },
+                            )
+                        }
                     }
                 }
             }
@@ -294,8 +347,10 @@ fun RadioTubeScreen(ui: PlayerUi) {
         ) { GlyphIcon(Glyph.Plus, 26.dp) }
     }
 
-    if (adding) AddDialog(onDismiss = { adding = false })
-    editing?.let { track -> EditDialog(track, onDismiss = { editing = null }) }
+    if (adding) AddDialog(selected, onDismiss = { adding = false })
+    tracks.firstOrNull { it.id == editingId }?.let { track -> EditDialog(track, playlists, onDismiss = { editingId = null }) }
+    if (creatingList) PlaylistDialog(null, onDismiss = { creatingList = false }, onCreated = { selectedId = it })
+    playlists.firstOrNull { it.id == editingListId }?.let { list -> PlaylistDialog(list, onDismiss = { editingListId = null }) }
 }
 
 @Composable
@@ -446,17 +501,14 @@ private fun TrackRow(track: Track, current: Boolean, playing: Boolean, onClick: 
 }
 
 @Composable
-private fun EmptyLibrary() {
+private fun EmptyNote(title: String, text: String) {
     Column(
         Modifier.fillMaxWidth().glass(RoundedCornerShape(24.dp)).padding(horizontal = 22.dp, vertical = 26.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Tu biblioteca está vacía", color = Aero.Navy, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text(title, color = Aero.Navy, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(6.dp))
-        Text(
-            "Pega un enlace con el botón verde, o en YouTube pulsa Compartir y elige RadioTube.",
-            color = Aero.Sub, fontSize = 14.sp, lineHeight = 19.sp, textAlign = TextAlign.Center,
-        )
+        Text(text, color = Aero.Sub, fontSize = 14.sp, lineHeight = 19.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -466,19 +518,19 @@ private fun clipboardText(context: Context): String {
 }
 
 @Composable
-private fun AddDialog(onDismiss: () -> Unit) {
+private fun AddDialog(into: Playlist?, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var link by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var invalid by remember { mutableStateOf(false) }
-    AeroDialog("Añadir de YouTube", onDismiss) {
+    AeroDialog(if (into == null) "Añadir de YouTube" else "Añadir a ${into.name}", onDismiss) {
         Spacer(Modifier.height(14.dp))
-        AeroField(link, { link = it; invalid = false }, "Enlace del vídeo", singleLine = false)
+        AeroField(link, { link = it; invalid = false }, "Enlace de vídeo o de playlist", singleLine = false)
         Spacer(Modifier.height(10.dp))
         AeroField(name, { name = it }, "Nombre (opcional)")
         if (invalid) {
             Spacer(Modifier.height(8.dp))
-            Text("Usa un enlace de vídeo, Short o directo de YouTube.", color = Aero.Danger, fontSize = 13.sp)
+            Text("Usa un enlace de vídeo, Short, directo o playlist de YouTube.", color = Aero.Danger, fontSize = 13.sp)
         }
         Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -487,21 +539,30 @@ private fun AddDialog(onDismiss: () -> Unit) {
                 if (pasted.isNotBlank()) { link = pasted.trim(); invalid = false }
             })
             AeroPill("Añadir", OrbGreen, modifier = Modifier.weight(1f), onClick = {
-                when (addLinks(link, name)) {
-                    null -> invalid = true
-                    else -> onDismiss()
-                }
+                if (addLinks(link, name, into?.id) == null) invalid = true else onDismiss()
             })
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EditDialog(track: Track, onDismiss: () -> Unit) {
+private fun EditDialog(track: Track, playlists: List<Playlist>, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(track.title) }
     AeroDialog("Editar pista", onDismiss) {
         Spacer(Modifier.height(14.dp))
         AeroField(name, { name = it }, "Nombre")
+        if (playlists.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            Text("En estas listas", color = Aero.Sub, fontSize = 13.sp)
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (list in playlists) {
+                    val member = track.id in list.trackIds
+                    AeroChip(list.name, member, active = OrbGreen, onClick = { Library.setMember(list.id, track.id, !member) })
+                }
+            }
+        }
         Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             AeroPill("Eliminar", OrbRed, onClick = { Library.remove(track.id); onDismiss() })
@@ -509,6 +570,62 @@ private fun EditDialog(track: Track, onDismiss: () -> Unit) {
                 if (name.trim() != track.title) Library.rename(track.id, name)
                 onDismiss()
             })
+        }
+    }
+}
+
+/** Creates a list ([existing] null), optionally from a YouTube playlist link, or edits one. */
+@Composable
+private fun PlaylistDialog(existing: Playlist?, onDismiss: () -> Unit, onCreated: (String) -> Unit = {}) {
+    var name by remember { mutableStateOf(existing?.name.orEmpty()) }
+    var link by remember { mutableStateOf("") }
+    var problem by remember { mutableStateOf<String?>(null) }
+    // Imported lists bring their tracks with them, so by default they take them away again.
+    var withTracks by remember { mutableStateOf(existing?.source != null) }
+    AeroDialog(if (existing == null) "Nueva lista" else "Editar lista", onDismiss) {
+        Spacer(Modifier.height(14.dp))
+        AeroField(name, { name = it; problem = null }, "Nombre de la lista")
+        if (existing == null) {
+            Spacer(Modifier.height(10.dp))
+            AeroField(link, { link = it; problem = null }, "Playlist de YouTube (opcional)", singleLine = false)
+        }
+        problem?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = Aero.Danger, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(18.dp))
+        if (existing == null) {
+            AeroPill("Crear", OrbGreen, modifier = Modifier.fillMaxWidth(), onClick = {
+                if (link.isNotBlank()) {
+                    val source = Library.findPlaylistIds(link).firstOrNull()
+                    if (source == null) {
+                        problem = "Eso no es un enlace de playlist de YouTube."
+                    } else {
+                        Yt.importPlaylist(source, name)
+                        onDismiss()
+                    }
+                } else {
+                    val id = Library.createPlaylist(name)
+                    if (id == null) problem = "Ponle un nombre a la lista." else { onCreated(id); onDismiss() }
+                }
+            })
+        } else {
+            existing.source?.let { source ->
+                AeroPill("Traer lo nuevo de YouTube", OrbGlass, modifier = Modifier.fillMaxWidth(), onClick = {
+                    Yt.importPlaylist(source)
+                    onDismiss()
+                })
+                Spacer(Modifier.height(10.dp))
+            }
+            AeroChip("Al eliminar, borrar también sus pistas", withTracks, active = OrbRed, onClick = { withTracks = !withTracks })
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AeroPill("Eliminar", OrbRed, onClick = { Library.deletePlaylist(existing.id, withTracks); onDismiss() })
+                AeroPill("Guardar", OrbBlue, modifier = Modifier.weight(1f), onClick = {
+                    Library.renamePlaylist(existing.id, name)
+                    onDismiss()
+                })
+            }
         }
     }
 }

@@ -64,7 +64,8 @@ class PlaybackService : MediaSessionService() {
         )
         session = MediaSession.Builder(this, player).setCallback(callback).setSessionActivity(open).build()
 
-        scope.launch { Library.tracks.collect { sync(it) } }
+        scope.launch { Library.tracks.collect { sync() } }
+        scope.launch { Library.playlists.collect { sync() } }
         scope.launch {
             while (true) {
                 delay(4000)
@@ -160,15 +161,19 @@ class PlaybackService : MediaSessionService() {
         if (player.playbackState == Player.STATE_READY) Library.setPosition(id, player.currentPosition)
     }
 
-    /** Keeps the running playlist in step with the library: removals, additions, renames. */
-    private fun sync(tracks: List<Track>) {
+    /** Keeps the running queue in step with the list it was started from: removals, additions, renames. */
+    private fun sync() {
         if (player.mediaItemCount == 0) return
-        val byId = tracks.associateBy { it.id }
+        val byId = Library.tracks.value.associateBy { it.id }
+        // Null when the playlist being played was deleted: keep playing what is queued, minus deleted tracks.
+        val wanted = Library.queue(Library.context)
+        val wantedIds = wanted?.mapTo(HashSet()) { it.id }
         for (i in player.mediaItemCount - 1 downTo 0) {
-            if (player.getMediaItemAt(i).mediaId !in byId) player.removeMediaItem(i)
+            val id = player.getMediaItemAt(i).mediaId
+            if (id !in byId || (wantedIds != null && id !in wantedIds)) player.removeMediaItem(i)
         }
         val present = (0 until player.mediaItemCount).mapTo(HashSet()) { player.getMediaItemAt(it).mediaId }
-        for (t in tracks) if (t.id !in present) player.addMediaItem(Items.build(t))
+        for (t in wanted.orEmpty()) if (t.id !in present) player.addMediaItem(Items.build(t))
         for (i in 0 until player.mediaItemCount) {
             val current = player.getMediaItemAt(i)
             val wanted = Items.build(byId[current.mediaId] ?: continue)
