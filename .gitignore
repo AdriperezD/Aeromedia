@@ -17,3 +17,6 @@ HANDOFF.md
 *.keystore
 app/release/
 captures/
+
+# Release signing: path and password of the private key
+keystore.properties
