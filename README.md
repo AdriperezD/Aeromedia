@@ -149,6 +149,17 @@ lo comprueba sola cada 12 horas.
 - [Jetpack Compose](https://developer.android.com/compose) y [Coil](https://coil-kt.github.io/coil/) — la interfaz y las carátulas.
 - **skylofi** — el plugin de escritorio que inspiró la idea.
 
+## Licencia
+
+Aeromedia es software libre bajo la [GNU General Public License v3.0](LICENSE): puedes
+usarla, estudiarla, modificarla y redistribuirla, siempre que las versiones derivadas
+sigan siendo GPL-3.0 y publiquen su código.
+
+La elección viene de sus dependencias: la app incluye
+[youtubedl-android](https://github.com/yausername/youtubedl-android), que es GPL-3.0.
+El resto son compatibles con ella: Media3, Compose y Coil usan Apache-2.0, y yt-dlp
+The Unlicense.
+
 > [!IMPORTANT]
 > Aeromedia es un proyecto personal. Úsala con contenido que tengas derecho a
 > escuchar y respeta las condiciones de uso de YouTube.
