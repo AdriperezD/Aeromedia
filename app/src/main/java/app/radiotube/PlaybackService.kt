@@ -21,7 +21,6 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Background audio: the saved library is ExoPlayer's playlist, and each item is resolved by yt-dlp on demand. */
@@ -75,18 +74,11 @@ class PlaybackService : MediaSessionService() {
 
         scope.launch { Library.tracks.collect { sync() } }
         scope.launch { Library.playlists.collect { sync() } }
-        scope.launch {
-            while (true) {
-                delay(4000)
-                if (player.isPlaying) rememberPosition()
-            }
-        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
-        rememberPosition()
         scope.cancel()
         session?.release()
         session = null
@@ -105,36 +97,16 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val listener = object : Player.Listener {
-        override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
-            val previous = old.mediaItem?.mediaId ?: return
-            if (previous == new.mediaItem?.mediaId) return
-            // A track that played to its end starts over next time; one the user left resumes where it was.
-            val finished = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
-            if (Library.get(previous)?.live != true) Library.setPosition(previous, if (finished) 0 else old.positionMs)
-            Bus.error.value = null
-        }
-
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            val track = mediaItem?.let { Library.get(it.mediaId) } ?: return
-            Library.lastPlayed = track
-            // However the player got here (next, end of the previous track, a removal), a track with a saved
-            // place resumes there. Starting at zero would also overwrite that place with the new position.
-            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT && track.resumeMs > 0 && player.currentPosition < 1000) {
-                player.seekTo(track.resumeMs)
-            }
+            mediaItem?.let { Library.lastPlayed = Library.get(it.mediaId) }
+            Bus.error.value = null
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
                 player.currentMediaItem?.let { retries.remove(it.mediaId) }
                 Bus.error.value = null
-            } else if (player.playbackState == Player.STATE_READY) {
-                rememberPosition()
             }
-        }
-
-        override fun onPlaybackStateChanged(state: Int) {
-            if (state == Player.STATE_ENDED) player.currentMediaItem?.let { Library.setPosition(it.mediaId, 0) }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -168,12 +140,6 @@ class PlaybackService : MediaSessionService() {
             }
             Bus.error.value = root.message ?: "No se pudo reproducir."
         }
-    }
-
-    private fun rememberPosition() {
-        val id = player.currentMediaItem?.mediaId ?: return
-        if (player.isCurrentMediaItemLive || Library.get(id)?.live == true) return
-        if (player.playbackState == Player.STATE_READY) Library.setPosition(id, player.currentPosition)
     }
 
     /** Keeps the running queue in step with the list it was started from: removals, additions, renames. */

@@ -28,7 +28,6 @@ data class Track(
     val title: String,
     val artist: String = "",
     val durationMs: Long = 0,
-    val positionMs: Long = 0,
     val live: Boolean = false,
     /** The stream yt-dlp hands back is an HLS manifest rather than a plain audio file. */
     val hls: Boolean = false,
@@ -40,10 +39,6 @@ data class Track(
     val url get() = "https://www.youtube.com/watch?v=$id"
     val thumb get() = "https://i.ytimg.com/vi/$id/mqdefault.jpg"
     val thumbLarge get() = "https://i.ytimg.com/vi/$id/hq720.jpg"
-
-    /** Where playback should start: long mixes pick up where they were left, like the desktop plugin does. */
-    val resumeMs: Long
-        get() = if (!live && positionMs > 10_000 && (durationMs == 0L || positionMs < durationMs - 15_000)) positionMs else 0
 }
 
 /** A named list of saved tracks. [source] is the YouTube playlist it was imported from, if any. */
@@ -122,7 +117,6 @@ object Library {
                     title = o.optString("title"),
                     artist = o.optString("artist"),
                     durationMs = o.optLong("duration"),
-                    positionMs = o.optLong("position"),
                     live = o.optBoolean("live"),
                     hls = o.optBoolean("hls"),
                     custom = o.optBoolean("custom"),
@@ -188,8 +182,6 @@ object Library {
         val clean = name.trim().take(160)
         if (clean.isNotEmpty()) edit(id) { it.copy(title = clean, custom = true) }
     }
-
-    fun setPosition(id: String, positionMs: Long) = edit(id) { it.copy(positionMs = positionMs.coerceAtLeast(0)) }
 
     /** The track's downloaded audio, or null when it has none (or the file has gone missing). */
     fun audioFile(track: Track): File? = track.file?.let { File(audioDir, it) }?.takeIf { it.isFile }
@@ -304,7 +296,7 @@ object Library {
                 trackArray.put(
                     JSONObject()
                         .put("id", t.id).put("title", t.title).put("artist", t.artist)
-                        .put("duration", t.durationMs).put("position", t.positionMs)
+                        .put("duration", t.durationMs)
                         .put("live", t.live).put("hls", t.hls).put("custom", t.custom).put("file", t.file ?: "")
                 )
             }

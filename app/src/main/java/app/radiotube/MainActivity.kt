@@ -112,7 +112,8 @@ class PlayerUi {
             if (c.playWhenReady) c.pause() else c.play()
             return
         }
-        val resume = if (track.live) C.TIME_UNSET else track.resumeMs
+        // Every track starts from the beginning; a live stream starts at its live edge.
+        val start = if (track.live) C.TIME_UNSET else 0L
         var list = context
         var queue = Library.queue(list)
         if (queue == null || queue.none { it.id == track.id }) {
@@ -122,7 +123,7 @@ class PlayerUi {
         Library.context = list
         val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
         val queued = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId }
-        if (queued == queue.map { it.id }) c.seekTo(index, resume) else c.setMediaItems(queue.map(Items::build), index, resume)
+        if (queued == queue.map { it.id }) c.seekTo(index, start) else c.setMediaItems(queue.map(Items::build), index, start)
         c.prepare()
         c.play()
     }
@@ -482,12 +483,10 @@ private fun TrackRow(track: Track, current: Boolean, playing: Boolean, download:
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(track.title, color = Aero.Navy, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val resumable = !track.live && track.positionMs > 10_000
             val detail = buildList {
                 if (track.artist.isNotEmpty()) add(track.artist)
                 when {
                     track.live -> add("En directo")
-                    resumable && track.durationMs > 0 -> add("${clock(track.positionMs)} / ${clock(track.durationMs)}")
                     track.durationMs > 0 -> add(clock(track.durationMs))
                 }
             }.joinToString(" · ").ifEmpty { "YouTube" }.let {
