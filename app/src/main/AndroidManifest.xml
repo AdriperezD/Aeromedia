@@ -12,7 +12,7 @@
         android:allowBackup="true"
         android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="RadioTube"
+        android:label="Aeromedia"
         android:supportsRtl="true"
         android:theme="@style/Theme.RadioTube">
 

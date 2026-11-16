@@ -184,7 +184,7 @@ fun addLinks(text: String, name: String? = null, playlistId: String? = null): St
     return when {
         lists.isNotEmpty() -> "Importando lista de YouTube…"
         added == 0 -> "Ya estaba en tu biblioteca"
-        else -> "Añadido a RadioTube"
+        else -> "Añadido a Aeromedia"
     }
 }
 
@@ -318,7 +318,7 @@ fun RadioTubeScreen(ui: PlayerUi) {
                 when {
                     tracks.isEmpty() -> EmptyNote(
                         "Tu biblioteca está vacía",
-                        "Pega un enlace con el botón verde, o en YouTube pulsa Compartir y elige RadioTube.",
+                        "Pega un enlace con el botón verde, o en YouTube pulsa Compartir y elige Aeromedia.",
                     )
                     shown.isEmpty() -> EmptyNote(
                         "Esta lista está vacía",
@@ -358,8 +358,8 @@ private fun Header(status: String?) {
     Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 14.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.Bottom) {
-                Text("Radio", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Light, style = TextStyle(shadow = Aero.TitleShadow))
-                Text("Tube", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, style = TextStyle(shadow = Aero.TitleShadow))
+                Text("Aero", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Light, style = TextStyle(shadow = Aero.TitleShadow))
+                Text("media", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, style = TextStyle(shadow = Aero.TitleShadow))
             }
             Text(
                 status ?: "Tu música de YouTube, solo el sonido",
